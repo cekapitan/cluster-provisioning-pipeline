@@ -36,3 +36,13 @@ make submit-provisioning-pipeline MESSAGE='cluster request demo'
 # or:
 ./send-api-request.sh 'cluster request demo'
 ```
+
+## Tests
+
+Offline unit/static checks (no cluster required):
+
+```bash
+make test
+```
+
+CI (`.github/workflows/ci.yml`) also runs a Kind + Argo submit smoke test on GitHub-hosted runners.

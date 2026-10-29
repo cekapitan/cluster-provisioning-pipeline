@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "cursor/**"]
+  pull_request:
+
+jobs:
+  unit:
+    name: Offline unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run offline tests
+        run: make test
+
+  # Live smoke against Kind + Argo. Skipped locally in this agent environment
+  # (no Docker); runs in GitHub-hosted runners.
+  kind-smoke:
+    name: Kind Argo submit smoke
+    runs-on: ubuntu-latest
+    needs: unit
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Install Kind
+        uses: helm/kind-action@v1
+        with:
+          install_only: true
+
+      - name: Create Kind cluster
+        run: kind create cluster --name provisioning-smoke
+
+      - name: Install Argo Workflows quick-start
+        run: make deploy-argo-workflow
+
+      - name: Wait for argo-server
+        run: |
+          kubectl -n argo rollout status deployment/argo-server --timeout=180s
+          kubectl -n argo wait --for=condition=Ready pod -l app=argo-server --timeout=180s
+
+      - name: Setup API submitter auth
+        run: make setup-argo-api-auth
+
+      - name: Wait for SA token Secret
+        run: |
+          for i in $(seq 1 30); do
+            token="$(kubectl get secret jenkins.service-account-token -n argo -o jsonpath='{.data.token}' 2>/dev/null || true)"
+            if [[ -n "${token}" ]]; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "timed out waiting for jenkins.service-account-token" >&2
+          exit 1
+
+      - name: Install argo CLI
+        env:
+          ARGO_WORKFLOWS_VERSION: v4.1.5
+        run: |
+          curl -sLO "https://github.com/argoproj/argo-workflows/releases/download/${ARGO_WORKFLOWS_VERSION}/argo-linux-amd64.gz"
+          gunzip argo-linux-amd64.gz
+          chmod +x argo-linux-amd64
+          sudo mv argo-linux-amd64 /usr/local/bin/argo
+
+      - name: Deploy WorkflowTemplate
+        run: |
+          # create may fail on re-run; prefer apply-style upsert via kubectl
+          kubectl apply -n argo -f workflow-templates/provisioning-pipeline/provisioning-pipeline.yaml
+
+      - name: Port-forward argo-server
+        run: |
+          kubectl -n argo port-forward deployment/argo-server 2746:2746 >/tmp/argo-pf.log 2>&1 &
+          echo $! > /tmp/argo-pf.pid
+          for i in $(seq 1 30); do
+            if curl -sk https://localhost:2746/api/v1/version >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "port-forward failed" >&2
+          cat /tmp/argo-pf.log >&2 || true
+          exit 1
+
+      - name: Submit provisioning pipeline via API
+        run: make submit-provisioning-pipeline MESSAGE='ci kind smoke'
+
+      - name: Assert workflow succeeded
+        run: |
+          name="$(kubectl -n argo get workflows -o jsonpath='{.items[0].metadata.name}')"
+          echo "watching workflow ${name}"
+          argo watch -n argo "${name}"
+          phase="$(kubectl -n argo get workflow "${name}" -o jsonpath='{.status.phase}')"
+          test "${phase}" = "Succeeded"

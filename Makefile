@@ -7,7 +7,7 @@ MESSAGE ?= Hello, Argo!
 .PHONY: deploy-argo-workflow uninstall-argo-workflow run-argo-workflow \
 	setup-argo-api-auth uninstall-argo-api-auth \
 	deploy-provisioning-pipeline update-provisioning-pipeline \
-	submit-provisioning-pipeline
+	submit-provisioning-pipeline test
 
 ####### Argo Workflows (Kind / local)
 deploy-argo-workflow:
@@ -37,3 +37,7 @@ update-provisioning-pipeline:
 
 submit-provisioning-pipeline:
 	./send-api-request.sh "$(MESSAGE)"
+
+####### Tests (offline unit/static; CI also runs a Kind smoke job)
+test:
+	bash tests/run.sh
