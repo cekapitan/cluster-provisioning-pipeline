@@ -7,17 +7,15 @@ on:
 
 jobs:
   unit:
-    name: Offline unit tests
+    name: offline unit tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Run offline tests
         run: make test
 
-  # Live smoke against Kind + Argo. Skipped locally in this agent environment
-  # (no Docker); runs in GitHub-hosted runners.
   kind-smoke:
-    name: Kind Argo submit smoke
+    name: Kind Argo local dry-run smoke
     runs-on: ubuntu-latest
     needs: unit
     steps:
@@ -40,10 +38,11 @@ jobs:
       - name: Wait for argo-server
         run: |
           kubectl -n argo rollout status deployment/argo-server --timeout=180s
-          kubectl -n argo wait --for=condition=Ready pod -l app=argo-server --timeout=180s
 
-      - name: Setup API submitter auth
-        run: make setup-argo-api-auth
+      - name: Setup API submitter auth + scripts + template
+        run: |
+          make setup-argo-api-auth
+          make deploy-provisioning-pipeline
 
       - name: Wait for SA token Secret
         run: |
@@ -66,11 +65,6 @@ jobs:
           chmod +x argo-linux-amd64
           sudo mv argo-linux-amd64 /usr/local/bin/argo
 
-      - name: Deploy WorkflowTemplate
-        run: |
-          # create may fail on re-run; prefer apply-style upsert via kubectl
-          kubectl apply -n argo -f workflow-templates/provisioning-pipeline/provisioning-pipeline.yaml
-
       - name: Port-forward argo-server
         run: |
           kubectl -n argo port-forward deployment/argo-server 2746:2746 >/tmp/argo-pf.log 2>&1 &
@@ -85,8 +79,12 @@ jobs:
           cat /tmp/argo-pf.log >&2 || true
           exit 1
 
-      - name: Submit provisioning pipeline via API
-        run: make submit-provisioning-pipeline MESSAGE='ci kind smoke'
+      - name: Submit local dry-run provision
+        run: |
+          make submit-provisioning-pipeline \
+            CLUSTER_NAME=ci-local \
+            NODE_IPS=10.0.0.10,10.0.0.11 \
+            DRY_RUN=true
 
       - name: Assert workflow succeeded
         run: |
