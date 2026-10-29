@@ -1,0 +1,7 @@
+---
+# Local / on-prem defaults. No cloud provider.
+cloud_provider: null
+unsafe_show_logs: false
+ansible_user: ubuntu
+ansible_ssh_private_key_file: "{{ lookup('env', 'SSH_PRIVATE_KEY_FILE') | default('/secrets/ssh-private-key', true) }}"
+ansible_ssh_common_args: "-o StrictHostKeyChecking=no"

@@ -1,0 +1,9 @@
+---
+kube_version: v1.30.4
+kube_network_plugin: calico
+kubeconfig_localhost: true
+kubectl_localhost: true
+# Local path: Longhorn is installed after Kubespray (not via cloud CSI).
+persistent_volumes_enabled: false
+helm_enabled: true
+metrics_server_enabled: true
