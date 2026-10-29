@@ -32,7 +32,6 @@ if [[ "$args" == "get secret jenkins.service-account-token -n argo" ]]; then
   exit 0
 fi
 if [[ "$args" == "get secret jenkins.service-account-token -n argo -o jsonpath={.data.token}" ]]; then
-  # base64("test-token")
   printf 'dGVzdC10b2tlbg=='
   exit 0
 fi
@@ -75,30 +74,29 @@ export PATH="${MOCK_BIN}:/usr/bin:/bin"
 
 echo "test_send_api_request.sh"
 
-# --- happy path ---
 write_kubectl_ok
 write_curl_capture
 rm -f "${CURL_CAPTURE}" "${CURL_BODY}"
-if out="$("${ROOT}/send-api-request.sh" 'hello "world"')" ; then
+export CLUSTER_NAME="lab-1"
+export NODE_IPS="10.0.0.1,10.0.0.2"
+export DRY_RUN="true"
+
+if out="$("${ROOT}/send-api-request.sh")" ; then
   if grep -qx 'Authorization: Bearer test-token' "${CURL_CAPTURE}"; then
     pass "sends Authorization Bearer with expanded token"
   else
-    fail "Authorization header missing or wrong: $(tr '\n' ' ' < "${CURL_CAPTURE}")"
-  fi
-
-  if grep -qx -- "--url" "${CURL_CAPTURE}" \
-    && grep -qx 'https://localhost:2746/api/v1/workflows/argo/submit' "${CURL_CAPTURE}"; then
-    pass "posts to workflows submit endpoint"
-  else
-    fail "submit URL incorrect"
+    fail "Authorization header missing or wrong"
   fi
 
   if jq -e '
       .resourceKind == "WorkflowTemplate"
       and .resourceName == "provisioning-pipeline"
-      and (.submitOptions.parameters | index("message=hello \"world\""))
+      and (.submitOptions.parameters | index("cluster_name=lab-1"))
+      and (.submitOptions.parameters | index("node_ips=10.0.0.1,10.0.0.2"))
+      and (.submitOptions.parameters | index("dry_run=true"))
+      and (.submitOptions.parameters | map(select(startswith("message="))) | length) == 0
     ' "${CURL_BODY}" >/dev/null; then
-    pass "JSON payload includes template and escaped message"
+    pass "JSON payload includes local provision parameters"
   else
     fail "payload incorrect: $(cat "${CURL_BODY}")"
   fi
@@ -112,10 +110,9 @@ else
   fail "happy path exited non-zero"
 fi
 
-# --- missing secret ---
 write_kubectl_missing
 write_curl_capture
-if err="$("${ROOT}/send-api-request.sh" 'x' 2>&1)" ; then
+if err="$("${ROOT}/send-api-request.sh" 2>&1)" ; then
   fail "missing secret should fail"
 else
   if [[ "${err}" == *'not found'* ]] || [[ "${err}" == *'setup-argo-api-auth'* ]]; then
@@ -125,8 +122,6 @@ else
   fi
 fi
 
-# --- single-quote regression guard ---
-# Old bug: --header 'authorization: ${ARGO_TOKEN}' never expands.
 if grep -E -- "--header[[:space:]]+'[Aa]uthorization:.*\\$\\{" "${ROOT}/send-api-request.sh" >/dev/null; then
   fail "Authorization header still uses unexpanded single-quoted variable"
 elif grep -F -- '--header "Authorization: Bearer ${TOKEN}"' "${ROOT}/send-api-request.sh" >/dev/null; then

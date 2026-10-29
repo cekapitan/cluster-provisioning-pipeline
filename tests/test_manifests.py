@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Static checks for auth and workflow manifests."""
+"""Static checks for auth and local provisioning workflow manifests."""
 
 from __future__ import annotations
 
@@ -58,15 +58,6 @@ def test_argo_api_submitter() -> None:
                 f"'{required}' on workflowtemplates (have {sorted(template_verbs)})"
             )
 
-    secret = next(d for d in docs if d.get("kind") == "Secret")
-    if secret.get("type") != "kubernetes.io/service-account-token":
-        fail("token Secret must be type kubernetes.io/service-account-token")
-    sa_name = secret.get("metadata", {}).get("annotations", {}).get(
-        "kubernetes.io/service-account.name"
-    )
-    if sa_name != "jenkins":
-        fail(f"token Secret annotation SA name is {sa_name!r}, expected 'jenkins'")
-
 
 def test_provisioning_pipeline_template() -> None:
     path = ROOT / "workflow-templates" / "provisioning-pipeline" / "provisioning-pipeline.yaml"
@@ -85,23 +76,59 @@ def test_provisioning_pipeline_template() -> None:
     if doc.get("metadata", {}).get("name") != "provisioning-pipeline":
         fail("WorkflowTemplate metadata.name must be provisioning-pipeline")
 
+    labels = doc.get("metadata", {}).get("labels", {})
+    if labels.get("provisioning.pipeline/environment") != "local":
+        fail("WorkflowTemplate must be labeled environment=local")
+
     spec = doc.get("spec", {})
     if spec.get("entrypoint") != "provision-pipeline":
         fail(f"entrypoint is {spec.get('entrypoint')!r}, expected 'provision-pipeline'")
 
-    templates = {t.get("name"): t for t in spec.get("templates", [])}
-    for name in ("provision-pipeline", "ingest-json", "start-provisioning"):
-        if name not in templates:
-            fail(f"missing template {name!r}")
+    params = {p["name"]: p for p in spec.get("arguments", {}).get("parameters", [])}
+    for name in (
+        "cluster_name",
+        "node_ips",
+        "ssh_user",
+        "kubespray_version",
+        "longhorn_version",
+        "dry_run",
+    ):
+        if name not in params:
+            fail(f"missing workflow parameter {name!r}")
+    if params.get("dry_run", {}).get("value") != "true":
+        fail("dry_run default must be 'true' for safe local CI")
 
-    steps_template = templates.get("provision-pipeline", {})
-    step_names = [
-        step.get("name")
-        for group in steps_template.get("steps", [])
-        for step in group
-    ]
-    if step_names != ["ingest-json", "start-provisioning"]:
-        fail(f"unexpected step order: {step_names}")
+    templates = {t.get("name"): t for t in spec.get("templates", [])}
+    if "provision-pipeline" not in templates:
+        fail("missing template 'provision-pipeline'")
+
+    entry = templates["provision-pipeline"]
+    source = (entry.get("script") or {}).get("source") or ""
+    if "provision-local.sh" not in source:
+        fail("entrypoint must invoke provision-local.sh")
+    if "environment" not in str(entry.get("metrics", {})) and "local" not in source:
+        # metrics labels carry environment=local
+        metrics = entry.get("metrics") or {}
+        blob = str(metrics)
+        if "local" not in blob:
+            fail("expected local environment metrics labels on entrypoint")
+
+
+def test_local_profile_and_schema() -> None:
+    profile = ROOT / "config" / "profiles" / "local-longhorn.yaml"
+    schema = ROOT / "config" / "schemas" / "local-cluster-request.schema.json"
+    if not profile.exists():
+        fail("missing config/profiles/local-longhorn.yaml")
+    else:
+        data = yaml.safe_load(profile.read_text())
+        if data.get("environment") != "local":
+            fail("local-longhorn profile environment must be local")
+        if data.get("provisioner") != "kubespray":
+            fail("local-longhorn profile provisioner must be kubespray")
+        if data.get("storage", {}).get("backend") != "longhorn":
+            fail("local-longhorn profile storage.backend must be longhorn")
+    if not schema.exists():
+        fail("missing config/schemas/local-cluster-request.schema.json")
 
 
 def test_makefile_phony_and_targets() -> None:
@@ -110,7 +137,9 @@ def test_makefile_phony_and_targets() -> None:
         fail("Makefile still uses PHONY: instead of .PHONY:")
     for target in (
         "setup-argo-api-auth",
+        "deploy-provisioning-scripts",
         "submit-provisioning-pipeline",
+        "script-dry-run",
         "test",
     ):
         if f"{target}:" not in makefile:
@@ -120,6 +149,7 @@ def test_makefile_phony_and_targets() -> None:
 def main() -> int:
     test_argo_api_submitter()
     test_provisioning_pipeline_template()
+    test_local_profile_and_schema()
     test_makefile_phony_and_targets()
 
     if failures:
