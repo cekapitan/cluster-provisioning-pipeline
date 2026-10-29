@@ -1,0 +1,47 @@
+# ServiceAccount + RBAC + token Secret for submitting Workflows via the Argo API.
+# Replaces the previous manual kubectl create role/sa/rolebinding flow and
+# the standalone api-token-secret.yaml (verbs were limited to list,update).
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: jenkins
+  namespace: argo
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: jenkins
+  namespace: argo
+rules:
+  # Submit, watch, and manage Workflow runs created via the API
+  - apiGroups: ["argoproj.io"]
+    resources: ["workflows", "workflowtaskresults"]
+    verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
+  # Resolve WorkflowTemplate on submit
+  - apiGroups: ["argoproj.io"]
+    resources: ["workflowtemplates"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jenkins
+  namespace: argo
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: jenkins
+subjects:
+  - kind: ServiceAccount
+    name: jenkins
+    namespace: argo
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: jenkins.service-account-token
+  namespace: argo
+  annotations:
+    kubernetes.io/service-account.name: jenkins
+type: kubernetes.io/service-account-token
