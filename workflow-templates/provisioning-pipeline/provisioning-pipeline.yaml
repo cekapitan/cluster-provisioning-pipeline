@@ -2,49 +2,103 @@ apiVersion: argoproj.io/v1alpha1
 kind: WorkflowTemplate
 metadata:
   name: provisioning-pipeline
-  namespace: argo               # Change to your target namespace if needed
+  namespace: argo
+  labels:
+    app.kubernetes.io/name: provisioning-pipeline
+    provisioning.pipeline/environment: local
+  annotations:
+    workflows.argoproj.io/description: |
+      Local/on-prem cluster provisioning via Kubespray, then Longhorn storage.
+      Default dry_run=true prints the plan without ansible/helm.
 spec:
-  entrypoint: provision-pipeline              # Specifies the starting template block
+  entrypoint: provision-pipeline
+  serviceAccountName: jenkins
+  volumes:
+    - name: scripts
+      configMap:
+        name: provisioning-scripts
+        defaultMode: 0755
+    - name: work
+      emptyDir: {}
+    # Swap for a Secret/Vault Agent mount when running dry_run=false.
+    - name: secrets
+      emptyDir: {}
   arguments:
     parameters:
-      - name: message
-        value: "Hello, Argo!"   # Default value if none is passed
+      - name: cluster_name
+        value: "local-demo"
+      - name: node_ips
+        value: "192.168.1.11,192.168.1.12,192.168.1.13"
+      - name: ssh_user
+        value: "ubuntu"
+      - name: kubespray_version
+        value: "v2.26.0"
+      - name: longhorn_version
+        value: "1.7.2"
+      - name: dry_run
+        value: "true"
   templates:
     - name: provision-pipeline
       inputs:
         parameters:
-          - name: message
-      steps:
-        - - name: ingest-json
-            template: ingest-json
-            arguments:
-              parameters:
-                - name: message
-                  value: "{{inputs.parameters.message}}"
-        - - name: start-provisioning
-            template: start-provisioning
-            arguments:
-              parameters:
-                - name: message
-                  value: "{{inputs.parameters.message}}"
-    ############### templates used in the steps above ###############
-
-
-    - name: ingest-json
-      inputs:
-        parameters:
-          - name: message
-      container:
-        image: alpine:latest
-        command: [echo]
-        args: ["Primary step received: {{inputs.parameters.message}}"]
-    
-    
-    - name: start-provisioning
-      inputs:
-        parameters:
-          - name: message
-      container:
-        image: alpine:latest
-        command: [echo]
-        args: ["Secondary step received: {{inputs.parameters.message}}"]
+          - name: cluster_name
+          - name: node_ips
+          - name: ssh_user
+          - name: kubespray_version
+          - name: longhorn_version
+          - name: dry_run
+      metrics:
+        prometheus:
+          - name: provisioning_pipeline_duration
+            help: Duration of local provisioning pipeline
+            labels:
+              - key: cluster_name
+                value: "{{inputs.parameters.cluster_name}}"
+              - key: environment
+                value: local
+            gauge:
+              realtime: true
+              value: "{{workflow.duration}}"
+          - name: provisioning_pipeline_result
+            help: Local provisioning pipeline completion count
+            labels:
+              - key: cluster_name
+                value: "{{inputs.parameters.cluster_name}}"
+              - key: status
+                value: "{{workflow.status}}"
+              - key: environment
+                value: local
+            counter:
+              value: "1"
+      outputs:
+        artifacts:
+          - name: status
+            path: /work/artifacts/status.json
+            optional: true
+          - name: request
+            path: /work/artifacts/request.json
+            optional: true
+      script:
+        image: alpine:3.20
+        command: [sh]
+        source: |
+          set -e
+          apk add --no-cache bash git python3 py3-pip openssh-client curl >/dev/null
+          export CLUSTER_NAME="{{inputs.parameters.cluster_name}}"
+          export NODE_IPS="{{inputs.parameters.node_ips}}"
+          export SSH_USER="{{inputs.parameters.ssh_user}}"
+          export KUBESPRAY_VERSION="{{inputs.parameters.kubespray_version}}"
+          export LONGHORN_VERSION="{{inputs.parameters.longhorn_version}}"
+          export DRY_RUN="{{inputs.parameters.dry_run}}"
+          export WORK_DIR="/work"
+          export ARTIFACTS_DIR="/work/artifacts"
+          export INVENTORY_DIR="/work/inventory/{{inputs.parameters.cluster_name}}"
+          export SECRETS_DIR="/secrets"
+          /scripts/provision-local.sh
+        volumeMounts:
+          - name: scripts
+            mountPath: /scripts
+          - name: work
+            mountPath: /work
+          - name: secrets
+            mountPath: /secrets
