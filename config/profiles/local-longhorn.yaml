@@ -1,0 +1,20 @@
+# Default profile for local / on-prem clusters.
+# Storage: Longhorn (not cloud CSI). Provisioner: Kubespray.
+profile: local-longhorn
+environment: local
+provisioner: kubespray
+storage:
+  backend: longhorn
+  default_storage_class: longhorn
+  replica_count: 3
+kubespray:
+  version: v2.26.0
+  network_plugin: calico
+  kubeconfig_localhost: true
+longhorn:
+  version: 1.7.2
+  namespace: longhorn-system
+ssh:
+  user: ubuntu
+  # Private key is expected at SECRETS_DIR/ssh-private-key (Vault/K8s Secret later).
+  private_key_path: /secrets/ssh-private-key
